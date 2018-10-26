@@ -280,6 +280,27 @@ Returns two values: \(A B C\) and \(1 2 3\)."
          (do-symbols (s package)
            (collect-if-matches #'collect pattern (symbol-name s) s)))))
 
+
+(defparameter *package-systems-cache* (make-hash-table :test 'eq))
+
+
+(defun find-primary-system (package)
+  "Searches a primary asdf system for the package.
+   For example, for package ultralisp/models/user it will return \"ultralisp\" system.
+   Used to give higher score to symbols from the same system dyring autocompletion."
+  
+  (check-type package package)
+  (let ((cached-value (gethash package *package-systems-cache* :absent)))
+    (if (eql cached-value :absent)
+        (setf (gethash package *package-systems-cache*)
+              (handler-case (asdf:primary-system-name
+                             (asdf:find-system
+                              (make-symbol (package-name package))))
+                (asdf/find-component:missing-component ()
+                  nil)))
+        (values cached-value))))
+
+
 (defun qualified-matching (pattern home-package)
   "Find package-qualified symbols flex-matching PATTERN.
   Return, as two values, a set of matches for external symbols,
@@ -294,10 +315,12 @@ Returns two values: \(A B C\) and \(1 2 3\)."
   (let* ((first-colon (position #\: pattern))
          (starts-with-colon (and first-colon (zerop first-colon)))
          (two-colons (and first-colon (< (1+ first-colon) (length pattern))
-                          (eq #\: (aref pattern (1+ first-colon))))))
+                          (eq #\: (aref pattern (1+ first-colon)))))
+         (home-package-system (find-primary-system home-package)))
+    
     (if (and starts-with-colon
              (not two-colons))
-        (values nil nil)
+      (values nil nil)
       (let* ((package-local-nicknames
                (slynk-backend:package-local-nicknames home-package))
              (nicknames-by-package
@@ -307,10 +330,11 @@ Returns two values: \(A B C\) and \(1 2 3\)."
                        do (push short (gethash (find-package full)
                                                ret)))
                  ret)))
-        (collecting (collect-external collect-internal)
+        (collecting (collect-same-system-external collect-external collect-same-system-internal collect-internal)
           (loop
             with use-list = (package-use-list home-package)
             for package in (remove +keyword-package+ (list-all-packages))
+            for package-system = (find-primary-system package)
             for sorted-nicknames = (and (or first-colon
                                             (not (eq package home-package)))
                                         (sort (append
@@ -324,26 +348,31 @@ Returns two values: \(A B C\) and \(1 2 3\)."
               do (do-symbols (s package)
                    (unless (gethash s seen)
                      (setf (gethash s seen) t)
-                     (let ((status (nth-value 1 (find-symbol (symbol-name s) package))))
-                       (cond ((and (eq status :external)
-                                   (or first-colon
-                                       (not (member (symbol-package s) use-list))))
-                              (loop for nickname in sorted-nicknames
-                                    do (collect-if-matches #'collect-external
-                                                           pattern
-                                                           (format nil "~a:~a"
-                                                                   nickname
-                                                                   (symbol-name s))
-                                                           s)))
-                             ((and two-colons
-                                   (eq status :internal))
-                              (loop for nickname in sorted-nicknames
-                                    do (collect-if-matches #'collect-internal
-                                                           pattern
-                                                           (format nil "~a::~a"
-                                                                   nickname
-                                                                   (symbol-name s))
-                                                           s)))))))))))))
+                     (let ((status (nth-value 1 (find-symbol (symbol-name s) package)))
+                           (same-system (and home-package-system
+                                             (equal home-package-system
+                                                    package-system))))
+                       (flet ((collect-using (func-to-collect symbol-name-template)
+                                (loop for nickname in sorted-nicknames
+                                      do (collect-if-matches func-to-collect
+                                                             pattern
+                                                             (format nil symbol-name-template
+                                                                     nickname
+                                                                     (symbol-name s))
+                                                             s))))
+                         (cond ((and (eq status :external)
+                                     (or first-colon
+                                         (not (member (symbol-package s) use-list))))
+                                (collect-using (if same-system
+                                                   #'collect-same-system-external
+                                                   #'collect-external)
+                                               "~a:~a"))
+                               ((and two-colons
+                                     (eq status :internal))
+                                (collect-using (if same-system
+                                                   #'collect-same-system-internal
+                                                   #'collect-internal)
+                                               "~a::~a")))))))))))))
 
 (defslyfun flex-completions (pattern package-name &key (limit 300))
   "Compute \"flex\" completions for PATTERN given current PACKAGE-NAME.
@@ -354,10 +383,14 @@ Returns two values: \(A B C\) and \(1 2 3\)."
             with package = (guess-buffer-package package-name)
             for (string symbol indexes score)
               in
-              (loop with (external internal)
+              (loop with (same-system-external external same-system-internal internal)
                       = (multiple-value-list (qualified-matching pattern package))
                     for e in (append (sort-by-score
                                       (keywords-matching pattern))
+                                     (sort-by-score
+                                      same-system-external)
+                                     (sort-by-score
+                                      same-system-internal)
                                      (sort-by-score
                                       (append (accessible-matching pattern package)
                                               external))
