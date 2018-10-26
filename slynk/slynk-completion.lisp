@@ -301,6 +301,26 @@ Returns two values: \(A B C\) and \(1 2 3\)."
         (values cached-value))))
 
 
+(defparameter *max-seen-symbols-count*
+  (let ((count 0))
+    (do-symbols (s :cl-user count)
+      (incf count)))
+  "Here we keep maximum number of symbols seen in a package
+   to not rehash seen hash table.")
+
+
+(defparameter *symbol-status-cache* (make-hash-table :test 'equal))
+
+
+(defun find-symbol-status (symbol package)
+  (let* ((key (cons symbol package))
+         (value (gethash key *symbol-status-cache* 'absent)))
+    (if (eq value 'absent)
+        (setf (gethash key *symbol-status-cache*)
+              (nth-value 1 (find-symbol (symbol-name symbol) package)))
+        value)))
+
+
 (defun qualified-matching (pattern home-package)
   "Find package-qualified symbols flex-matching PATTERN.
   Return, as two values, a set of matches for external symbols,
@@ -320,59 +340,65 @@ Returns two values: \(A B C\) and \(1 2 3\)."
     
     (if (and starts-with-colon
              (not two-colons))
-      (values nil nil)
-      (let* ((package-local-nicknames
-               (slynk-backend:package-local-nicknames home-package))
-             (nicknames-by-package
-               (let ((ret (make-hash-table)))
-                 (loop for (short . full) in
-                       package-local-nicknames
-                       do (push short (gethash (find-package full)
-                                               ret)))
-                 ret)))
-        (collecting (collect-same-system-external collect-external collect-same-system-internal collect-internal)
-          (loop
-            with use-list = (package-use-list home-package)
-            for package in (remove +keyword-package+ (list-all-packages))
-            for package-system = (find-primary-system package)
-            for sorted-nicknames = (and (or first-colon
-                                            (not (eq package home-package)))
-                                        (sort (append
-                                               (gethash package nicknames-by-package)
-                                               (package-nicknames package)
-                                               (list (package-name package)))
-                                              #'<
-                                              :key #'length))
-            for seen = (make-hash-table)
-            when sorted-nicknames
-              do (do-symbols (s package)
-                   (unless (gethash s seen)
-                     (setf (gethash s seen) t)
-                     (let ((status (nth-value 1 (find-symbol (symbol-name s) package)))
-                           (same-system (and home-package-system
-                                             (equal home-package-system
-                                                    package-system))))
-                       (flet ((collect-using (func-to-collect symbol-name-template)
-                                (loop for nickname in sorted-nicknames
-                                      do (collect-if-matches func-to-collect
-                                                             pattern
-                                                             (format nil symbol-name-template
-                                                                     nickname
-                                                                     (symbol-name s))
-                                                             s))))
-                         (cond ((and (eq status :external)
-                                     (or first-colon
-                                         (not (member (symbol-package s) use-list))))
-                                (collect-using (if same-system
-                                                   #'collect-same-system-external
-                                                   #'collect-external)
-                                               "~a:~a"))
-                               ((and two-colons
-                                     (eq status :internal))
-                                (collect-using (if same-system
-                                                   #'collect-same-system-internal
-                                                   #'collect-internal)
-                                               "~a::~a")))))))))))))
+        (values nil nil)
+        (let* ((package-local-nicknames
+                 (slynk-backend:package-local-nicknames home-package))
+               (nicknames-by-package
+                 (let ((ret (make-hash-table)))
+                   (loop for (short . full) in
+                         package-local-nicknames
+                         do (push short (gethash (find-package full)
+                                                 ret)))
+                   ret))
+               (seen (make-hash-table :test 'eq :size *max-seen-symbols-count*)))
+          (collecting (collect-same-system-external collect-external collect-same-system-internal collect-internal)
+            (loop
+              with use-list = (package-use-list home-package)
+              for package in (remove +keyword-package+ (list-all-packages))
+              for package-system = (find-primary-system package)
+              for sorted-nicknames = (and (or first-colon
+                                              (not (eq package home-package)))
+                                          (sort (append
+                                                 (gethash package nicknames-by-package)
+                                                 (package-nicknames package)
+                                                 (list (package-name package)))
+                                                #'<
+                                                :key #'length))
+              when sorted-nicknames
+                do (clrhash seen)
+                   (do-symbols (s package)
+                     (unless (gethash s seen)
+                       (setf (gethash s seen) t)
+                       (let ((status ;; (nth-value 1 (find-symbol (symbol-name s) package))
+                               (find-symbol-status s package))
+                             (same-system (and home-package-system
+                                               (equal home-package-system
+                                                      package-system))))
+                         (flet ((collect-using (func-to-collect symbol-name-template)
+                                  (loop for nickname in sorted-nicknames
+                                        do (collect-if-matches func-to-collect
+                                                               pattern
+                                                               (format nil symbol-name-template
+                                                                       nickname
+                                                                       (symbol-name s))
+                                                               s))))
+                           (cond ((and (eq status :external)
+                                       (or first-colon
+                                           (not (member (symbol-package s) use-list))))
+                                  (collect-using (if same-system
+                                                     #'collect-same-system-external
+                                                     #'collect-external)
+                                                 "~a:~a"))
+                                 ((and two-colons
+                                       (eq status :internal))
+                                  (collect-using (if same-system
+                                                     #'collect-same-system-internal
+                                                     #'collect-internal)
+                                                 "~a::~a")))))))
+                   
+                   (setf *max-seen-symbols-count*
+                         (max *max-seen-symbols-count*
+                              (hash-table-count seen)))))))))
 
 (defslyfun flex-completions (pattern package-name &key (limit 300))
   "Compute \"flex\" completions for PATTERN given current PACKAGE-NAME.
