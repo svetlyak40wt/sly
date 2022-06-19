@@ -1342,23 +1342,29 @@ stack."
       (fallback-source-location code-location)))
 
 (defun source-file-source-location (code-location)
-  (let* ((code-date (code-location-debug-source-created code-location))
-         (filename (code-location-debug-source-name code-location))
-         (*readtable* (guess-readtable-for-filename filename))
-         (source-code (get-source-code filename code-date)))
-    (with-debootstrapping
-      (with-input-from-string (s source-code)
-        (let* ((pos (stream-source-position code-location s))
-               (snippet (read-snippet s pos)))
-          (make-location `(:file ,filename)
-                         `(:position ,pos)
-                         `(:snippet ,snippet)))))))
+  (let* ((code-date (code-location-debug-source-created code-location)))
+    (multiple-value-bind
+          (filename logical-filename)
+        (code-location-debug-source-name code-location)
+      (let* ((*readtable* (guess-readtable-for-filename filename))
+             (source-code (get-source-code filename code-date)))
+        (with-debootstrapping
+          (with-input-from-string (s source-code)
+            (let* ((pos (stream-source-position code-location s))
+                   (snippet (read-snippet s pos)))
+              (make-location `(:file ,logical-filename)
+                             `(:position ,pos)
+                             `(:snippet ,snippet)))))))))
 
 (defun code-location-debug-source-name (code-location)
-  (namestring (truename (#.(slynk-backend:choose-symbol
+  (let* ((logical-path (pathname
+                        (#.(slynk-backend:choose-symbol
                             'sb-c 'debug-source-name
                             'sb-c 'debug-source-namestring)
-                           (sb-di::code-location-debug-source code-location)))))
+                           (sb-di::code-location-debug-source code-location))))
+         (local-path (namestring (truename logical-path))))
+    (values local-path
+            logical-path)))
 
 (defun code-location-debug-source-created (code-location)
   (sb-c::debug-source-created
@@ -1392,6 +1398,7 @@ stack."
 
 ;;; source-path-file-position and friends are in slynk-source-path-parser
 
+;; TODO: bookmark
 (defimplementation frame-source-location (index)
   (converting-errors-to-error-location
     (code-location-source-location

@@ -1100,7 +1100,7 @@ returns.")
 ;;;; Definition finding
 
 (defstruct (location (:type list)
-                      (:constructor make-location
+                      (:constructor %make-location
                           (buffer position &optional hints)))
   (type :location)
   buffer position
@@ -1109,6 +1109,53 @@ returns.")
   ;;     This is a snippet of the actual source text at the start of
   ;;     the definition, which could be used in a text search.
   hints)
+
+
+(defparameter *remote-to-local-hosts*
+  (list (cons "app" "app-local")))
+
+
+(defun %find-local-host (remote-host)
+  (cdr
+   (assoc remote-host *remote-to-local-hosts*
+          :test #'string-equal)))
+
+
+(defun %translate-pathname-to-local-filesystem (pathname)
+  (let* ((remote-host (host-namestring pathname))
+         (local-host (%find-local-host remote-host)))
+    (cond
+      (local-host
+       (translate-pathname pathname
+                           (make-pathname :host remote-host
+                                          :directory '(:absolute :wild-inferiors)
+                                          :name :wild
+                                          :type :wild
+                                          :version :wild)
+                           (make-pathname :host local-host
+                                          :directory '(:absolute :wild-inferiors)
+                                          :name :wild
+                                          :type :wild
+                                          :version :wild)
+                           
+                           ;; (merge-pathnames (make-pathname :host remote-host)
+                           ;;                  #P"**/*.*")
+                           ;; (merge-pathnames (make-pathname :host local-host)
+                           ;;                  #P"**/*.*")
+                           ))
+      (t
+       pathname))))
+
+
+(defun make-location (buffer position &optional hints)
+  (when (and (getf buffer :file))
+    (let ((new-buffer (copy-list buffer)))
+      (setf (getf new-buffer :file)
+            (translate-logical-pathname
+             (%translate-pathname-to-local-filesystem (getf buffer :file))))
+      (setf buffer new-buffer)))
+  (%make-location buffer position hints))
+
 
 (defmacro converting-errors-to-error-location (&body body)
   "Catches errors during BODY and converts them to an error location."
