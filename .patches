@@ -1,0 +1,8 @@
+svetlyak40wt/sly@scratch/fix-193-export-a-completion-sorting-function
+Adds a predicate for sorting completion results: =*completion-sort-predicate*=
+
+svetlyak40wt/sly@fix-definition-source-for-emacs
+https://github.com/joaotavora/sly/pull/516
+Это что-то нужное для моего эксперимента с открытием файлов с использованием виртуальных имён,
+которое я отложил до лучших времён.
+
