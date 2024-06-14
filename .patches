@@ -6,3 +6,6 @@ https://github.com/joaotavora/sly/pull/516
 Это что-то нужное для моего эксперимента с открытием файлов с использованием виртуальных имён,
 которое я отложил до лучших времён.
 
+svetlyak40wt/sly@fix-search-import-from
+https://github.com/joaotavora/sly/pull/643
+Чтобы импорты не ломались.
